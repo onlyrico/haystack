@@ -1,13 +1,14 @@
 import os
 from haystack.document_store.sql import SQLDocumentStore
 from haystack.document_store.memory import InMemoryDocumentStore
-from haystack.document_store.elasticsearch import Elasticsearch, ElasticsearchDocumentStore
+from haystack.document_store.elasticsearch import Elasticsearch, ElasticsearchDocumentStore, OpenSearchDocumentStore
 from haystack.document_store.faiss import FAISSDocumentStore
 from haystack.document_store.milvus import MilvusDocumentStore, IndexType
 from haystack.retriever.sparse import ElasticsearchRetriever, TfidfRetriever
 from haystack.retriever.dense import DensePassageRetriever, EmbeddingRetriever
 from haystack.reader.farm import FARMReader
 from haystack.reader.transformers import TransformersReader
+from haystack.utils import launch_milvus, launch_es, launch_opensearch
 from farm.file_utils import http_get
 
 import logging
@@ -25,7 +26,7 @@ reader_types = ["farm"]
 doc_index = "eval_document"
 label_index = "label"
 
-def get_document_store(document_store_type, similarity='dot_product'):
+def get_document_store(document_store_type, similarity='dot_product', index="document"):
     """ TODO This method is taken from test/conftest.py but maybe should be within Haystack.
     Perhaps a class method of DocStore that just takes string for type of DocStore"""
     if document_store_type == "sql":
@@ -36,11 +37,13 @@ def get_document_store(document_store_type, similarity='dot_product'):
     elif document_store_type == "memory":
         document_store = InMemoryDocumentStore()
     elif document_store_type == "elasticsearch":
+        launch_es()
         # make sure we start from a fresh index
         client = Elasticsearch()
         client.indices.delete(index='haystack_test*', ignore=[404])
         document_store = ElasticsearchDocumentStore(index="eval_document", similarity=similarity, timeout=3000)
     elif document_store_type in ("milvus_flat", "milvus_hnsw"):
+        launch_milvus()
         if document_store_type == "milvus_flat":
             index_type = IndexType.FLAT
             index_param = None
@@ -49,9 +52,15 @@ def get_document_store(document_store_type, similarity='dot_product'):
             index_type = IndexType.HNSW
             index_param = {"M": 64, "efConstruction": 80}
             search_param = {"ef": 20}
-        document_store = MilvusDocumentStore(similarity=similarity, index_type=index_type, index_param=index_param, search_param=search_param)
+        document_store = MilvusDocumentStore(
+            similarity=similarity,
+            index_type=index_type,
+            index_param=index_param,
+            search_param=search_param,
+            index=index
+        )
         assert document_store.get_document_count(index="eval_document") == 0
-    elif document_store_type in("faiss_flat", "faiss_hnsw"):
+    elif document_store_type in ("faiss_flat", "faiss_hnsw"):
         if document_store_type == "faiss_flat":
             index_type = "Flat"
         elif document_store_type == "faiss_hnsw":
@@ -67,11 +76,20 @@ def get_document_store(document_store_type, similarity='dot_product'):
         status = subprocess.run(
             ['docker exec haystack-postgres psql -U postgres -c "CREATE DATABASE haystack;"'], shell=True)
         time.sleep(1)
-        document_store = FAISSDocumentStore(sql_url="postgresql://postgres:password@localhost:5432/haystack",
-                                            faiss_index_factory_str=index_type,
-                                            similarity=similarity)
+        document_store = FAISSDocumentStore(
+            sql_url="postgresql://postgres:password@localhost:5432/haystack",
+            faiss_index_factory_str=index_type,
+            similarity=similarity,
+            index=index
+        )
         assert document_store.get_document_count() == 0
-
+    elif document_store_type in ("opensearch_flat", "opensearch_hnsw"):
+        launch_opensearch()
+        if document_store_type == "opensearch_flat":
+            index_type = "flat"
+        elif document_store_type == "opensearch_hnsw":
+            index_type = "hnsw"
+        document_store = OpenSearchDocumentStore(index_type=index_type, timeout=3000)
     else:
         raise Exception(f"No document store fixture for '{document_store_type}'")
     return document_store

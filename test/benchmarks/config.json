@@ -3,6 +3,26 @@
     "full": {
       "retriever_doc_stores": [
         [
+          "elastic",
+          "elasticsearch"
+        ],
+        [
+          "elastic",
+          "opensearch_flat"
+        ],
+        [
+          "dpr",
+          "opensearch_flat"
+        ],
+        [
+          "dpr",
+          "opensearch_hnsw"
+        ],
+        [
+          "dpr",
+          "elasticsearch"
+        ],
+        [
           "dpr",
           "milvus_flat"
         ],
@@ -11,24 +31,16 @@
           "milvus_hnsw"
         ],
         [
-          "elastic",
-          "elasticsearch"
-        ],
-        [
-          "sentence_transformers",
-          "elasticsearch"
-        ],
-        [
-          "dpr",
-          "elasticsearch"
-        ],
-        [
           "dpr",
           "faiss_flat"
         ],
         [
           "dpr",
           "faiss_hnsw"
+        ],
+        [
+          "sentence_transformers",
+          "elasticsearch"
         ]
       ],
       "n_docs_options": [

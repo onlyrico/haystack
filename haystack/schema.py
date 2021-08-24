@@ -1,45 +1,62 @@
 from typing import Any, Optional, Dict, List
 from uuid import uuid4
+
+import mmh3
 import numpy as np
 from abc import abstractmethod
 
+
 class Document:
-    def __init__(self, text: str,
-                 id: Optional[str] = None,
-                 score: Optional[float] = None,
-                 probability: Optional[float] = None,
-                 question: Optional[str] = None,
-                 meta: Dict[str, Any] = None,
-                 embedding: Optional[np.ndarray] = None):
+    def __init__(
+        self,
+        text: str,
+        id: Optional[str] = None,
+        score: Optional[float] = None,
+        question: Optional[str] = None,
+        meta: Dict[str, Any] = None,
+        embedding: Optional[np.ndarray] = None,
+        id_hash_keys: Optional[List[str]] = None
+    ):
         """
-        Object used to represent documents / passages in a standardized way within Haystack.
-        For example, this is what the retriever will return from the DocumentStore,
-        regardless if it's ElasticsearchDocumentStore or InMemoryDocumentStore.
+        One of the core data classes in Haystack. It's used to represent documents / passages in a standardized way within Haystack.
+        Documents are stored in DocumentStores, are returned by Retrievers, are the input for Readers and are used in
+        many other places that manipulate or interact with document-level data.
 
-        Note that there can be multiple Documents originating from one file (e.g. PDF),
-        if you split the text into smaller passages. We'll have one Document per passage in this case.
+        Note: There can be multiple Documents originating from one file (e.g. PDF), if you split the text
+        into smaller passages. We'll have one Document per passage in this case.
 
-        :param id: ID used within the DocumentStore
+        Each document has a unique ID. This can be supplied by the user or generated automatically.
+        It's particularly helpful for handling of duplicates and referencing documents in other objects (e.g. Labels)
+
+        There's an easy option to convert from/to dicts via `from_dict()` and `to_dict`.
+
         :param text: Text of the document
+        :param id: Unique ID for the document. If not supplied by the user, we'll generate one automatically by
+                   creating a hash from the supplied text. This behaviour can be further adjusted by `id_hash_keys`.
         :param score: Retriever's query score for a retrieved document
-        :param probability: a pseudo probability by scaling score in the range 0 to 1
-        :param question: Question text for FAQs.
+        :param question: Question text (e.g. for FAQs where one document usually consists of one question and one answer text).
         :param meta: Meta fields for a document like name, url, or author.
         :param embedding: Vector encoding of the text
+        :param id_hash_keys: Generate the document id from a custom list of strings.
+                             If you want ensure you don't have duplicate documents in your DocumentStore but texts are
+                             not unique, you can provide custom strings here that will be used (e.g. ["filename_xy", "text_of_doc"].
         """
 
         self.text = text
+        self.score = score
+        self.question = question
+        self.meta = meta or {}
+        self.embedding = embedding
+
         # Create a unique ID (either new one, or one from user input)
         if id:
             self.id = str(id)
         else:
-            self.id = str(uuid4())
+            self.id = self._get_id(id_hash_keys)
 
-        self.score = score
-        self.probability = probability
-        self.question = question
-        self.meta = meta or {}
-        self.embedding = embedding
+    def _get_id(self, id_hash_keys):
+        final_hash_key = ":".join(id_hash_keys) if id_hash_keys else self.text
+        return '{:02x}'.format(mmh3.hash128(final_hash_key, signed=False))
 
     def to_dict(self, field_map={}):
         inv_field_map = {v:k for k, v in field_map.items()}
@@ -52,7 +69,7 @@ class Document:
     @classmethod
     def from_dict(cls, dict, field_map={}):
         _doc = dict.copy()
-        init_args = ["text", "id", "score", "probability", "question", "meta", "embedding"]
+        init_args = ["text", "id", "score", "question", "meta", "embedding"]
         if "meta" not in _doc.keys():
             _doc["meta"] = {}
         # copy additional fields into "meta"
@@ -89,7 +106,9 @@ class Label:
                  no_answer: Optional[bool] = None,
                  model_id: Optional[int] = None,
                  created_at: Optional[str] = None,
-                 updated_at: Optional[str] = None):
+                 updated_at: Optional[str] = None,
+                 meta: Optional[dict] = None
+                 ):
         """
         Object used to represent label/feedback in a standardized way within Haystack.
         This includes labels from dataset like SQuAD, annotations from labeling tools,
@@ -130,6 +149,10 @@ class Label:
         self.offset_start_in_doc = offset_start_in_doc
         self.no_answer = no_answer
         self.model_id = model_id
+        if not meta:
+            self.meta = dict()
+        else:
+            self.meta = meta
 
     @classmethod
     def from_dict(cls, dict):
@@ -180,7 +203,9 @@ class MultiLabel:
                  multiple_document_ids: List[Any],
                  multiple_offset_start_in_docs: List[Any],
                  no_answer: Optional[bool] = None,
-                 model_id: Optional[int] = None):
+                 model_id: Optional[int] = None,
+                 meta: dict = None
+                 ):
         """
         Object used to aggregate multiple possible answers for the same question
 
@@ -205,6 +230,10 @@ class MultiLabel:
         self.multiple_offset_start_in_docs = multiple_offset_start_in_docs
         self.no_answer = no_answer
         self.model_id = model_id
+        if not meta:
+            self.meta = dict()
+        else:
+            self.meta = meta
 
     @classmethod
     def from_dict(cls, dict):
@@ -227,6 +256,7 @@ class BaseComponent:
 
     outgoing_edges: int
     subclasses: dict = {}
+    pipeline_config: dict = {}
 
     def __init_subclass__(cls, **kwargs):
         """ This automatically keeps track of all available subclasses.
@@ -236,6 +266,13 @@ class BaseComponent:
         cls.subclasses[cls.__name__] = cls
 
     @classmethod
+    def get_subclass(cls, component_type: str):
+        if component_type not in cls.subclasses.keys():
+            raise Exception(f"Haystack component with the name '{component_type}' does not exist.")
+        subclass = cls.subclasses[component_type]
+        return subclass
+
+    @classmethod
     def load_from_args(cls, component_type: str, **kwargs):
         """
         Load a component instance of the given type using the kwargs.
@@ -243,10 +280,32 @@ class BaseComponent:
         :param component_type: name of the component class to load.
         :param kwargs: parameters to pass to the __init__() for the component. 
         """
-        if component_type not in cls.subclasses.keys():
-            raise Exception(f"Haystack component with the name '{component_type}' does not exist.")
-        instance = cls.subclasses[component_type](**kwargs)
+        subclass = cls.get_subclass(component_type)
+        instance = subclass(**kwargs)
         return instance
+
+    @classmethod
+    def load_from_pipeline_config(cls, pipeline_config: dict, component_name: str):
+        """
+        Load an individual component from a YAML config for Pipelines.
+
+        :param pipeline_config: the Pipelines YAML config parsed as a dict.
+        :param component_name: the name of the component to load.
+        """
+        if pipeline_config:
+            all_component_configs = pipeline_config["components"]
+            all_component_names = [comp["name"] for comp in all_component_configs]
+            component_config = next(comp for comp in all_component_configs if comp["name"] == component_name)
+            component_params = component_config["params"]
+
+            for key, value in component_params.items():
+                if value in all_component_names:  # check if the param value is a reference to another component
+                    component_params[key] = cls.load_from_pipeline_config(pipeline_config, value)
+
+            component_instance = cls.load_from_args(component_config["type"], **component_params)
+        else:
+            component_instance = cls.load_from_args(component_name)
+        return component_instance
 
     @abstractmethod
     def run(self, *args: Any, **kwargs: Any):
@@ -259,3 +318,18 @@ class BaseComponent:
         :return:
         """
         pass
+
+    def set_config(self, **kwargs):
+        """
+        Save the init parameters of a component that later can be used with exporting
+        YAML configuration of a Pipeline.
+
+        :param kwargs: all parameters passed to the __init__() of the Component.
+        """
+        if not self.pipeline_config:
+            self.pipeline_config = {"params": {}, "type": type(self).__name__}
+            for k, v in kwargs.items():
+                if isinstance(v, BaseComponent):
+                    self.pipeline_config["params"][k] = v.pipeline_config
+                elif v is not None:
+                    self.pipeline_config["params"][k] = v

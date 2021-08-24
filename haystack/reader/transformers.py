@@ -57,6 +57,14 @@ class TransformersReader(BaseReader):
         :param doc_stride: length of striding window for splitting long texts (used if len(text) > max_seq_len)
 
         """
+
+        # save init parameters to enable export of component config as YAML
+        self.set_config(
+            model_name_or_path=model_name_or_path, model_version=model_version, tokenizer=tokenizer,
+            context_window_size=context_window_size, use_gpu=use_gpu, top_k=top_k, doc_stride=doc_stride,
+            top_k_per_candidate=top_k_per_candidate, return_no_answers=return_no_answers, max_seq_len=max_seq_len,
+        )
+
         self.model = pipeline('question-answering', model=model_name_or_path, tokenizer=tokenizer, device=use_gpu, revision=model_version)
         self.context_window_size = context_window_size
         self.top_k = top_k
@@ -71,7 +79,7 @@ class TransformersReader(BaseReader):
         """
         Use loaded QA model to find answers for a query in the supplied list of Document.
 
-        Returns dictionaries containing answers sorted by (desc.) probability.
+        Returns dictionaries containing answers sorted by (desc.) score.
         Example:
 
          ```python
@@ -82,8 +90,7 @@ class TransformersReader(BaseReader):
             |                 'context': " She travels with her father, Eddard, to King's Landing when he is ",
             |                 'offset_answer_start': 147,
             |                 'offset_answer_end': 154,
-            |                 'probability': 0.9787139466668613,
-            |                 'score': None,
+            |                 'score': 0.9787139466668613,
             |                 'document_id': '1337'
             |                 },...
             |              ]
@@ -129,8 +136,7 @@ class TransformersReader(BaseReader):
                         "context": doc.text[context_start:context_end],
                         "offset_start": pred["start"],
                         "offset_end": pred["end"],
-                        "probability": pred["score"],
-                        "score": None,
+                        "score": pred["score"],
                         "document_id": doc.id,
                         "meta": doc.meta
                     })
@@ -147,9 +153,9 @@ class TransformersReader(BaseReader):
 
         if self.return_no_answers:
             answers.append(no_ans_prediction)
-        # sort answers by their `probability` and select top-k
+        # sort answers by their `score` and select top-k
         answers = sorted(
-            answers, key=lambda k: k["probability"], reverse=True
+            answers, key=lambda k: k["score"], reverse=True
         )
         answers = answers[:top_k]
 

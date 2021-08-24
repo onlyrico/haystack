@@ -30,6 +30,21 @@ p.draw(path="custom_pipe.png")
 ```
 ![image](https://user-images.githubusercontent.com/1563902/102451716-54813700-4039-11eb-881e-f3c01b47ca15.png)
 
+### Arguments
+
+Whatever keyword arguments are passed into the `Pipeline.run()` method will be passed on to each node in the pipeline.
+For example, in the code snippet below, all nodes will receive `query`, `top_k_retriever` and `top_k_reader` as argument,
+even if they don't use those arguments. It is therefore very important when defining custom nodes that their 
+keyword argument names do not clash with the other nodes in your pipeline.
+
+```python
+res = pipeline.run(
+    query="What did Einstein work on?",
+    top_k_retriever=1,
+    top_k_reader=5
+)
+```
+
 ### YAML File Definitions
 
 For your convenience, there is also the option of defining and loading pipelines in YAML files.
@@ -75,7 +90,7 @@ To load, simply call:
 pipeline.load_from_yaml(Path("sample.yaml"))
 ```
 
-For another example YAML config, check out [this file](https://github.com/deepset-ai/haystack/blob/master/rest_api/pipelines.yaml).
+For another example YAML config, check out [this file](https://github.com/deepset-ai/haystack/blob/master/rest_api/pipeline/pipelines.yaml).
 
 ### Multiple retrievers
 You can now also use multiple Retrievers and join their results: 
@@ -130,7 +145,7 @@ To get hands on with this kind of node, have a look at the [evaluation tutorial]
 
 ### Default Pipelines (replacing the "Finder")
 Last but not least, we added some "Default Pipelines" that allow you to run standard patterns with very few lines of code.
-This is replacing the `Finder` class which is now deprecated.
+This is replacing the `Finder` class which was deprecated with Haystack 0.6.0 .
 
 ```
 from haystack.pipeline import DocumentSearchPipeline, ExtractiveQAPipeline, Pipeline, JoinDocuments
@@ -152,6 +167,20 @@ doc_pipe = FAQPipeline(retriever=retriever)
 res = doc_pipe.run(query="How can I change my address?", top_k_retriever=3)
 
 ```    
+So to migrate your QA system from the deprecated `Finder` to `ExtractiveQAPipeline` you'd need to: 
+```
+# 1. Change import
+from haystack.pipeline import  ExtractiveQAPipeline
+
+# 2. Replace the Finder 
+qa_pipe = ExtractiveQAPipeline(reader=reader, retriever=retriever)
+
+# 3. Replace get_answers() with run()
+res = qa_pipe.run(query="When was Kant born?", top_k_retriever=3, top_k_reader=5)
+
+# 4. Access your results from ["documents"] rather than ["answers"]
+print(res["documents"])
+```
 See also the [Pipelines API documentation](/docs/latest/apipipelinesmd) for more details. 
 
 We plan many more features around the new pipelines incl. parallelized execution, distributed execution, dry runs - so stay tuned ...  

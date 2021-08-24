@@ -1,10 +1,8 @@
-import os
-
 import faiss
 import numpy as np
 import pytest
 from haystack import Document
-from haystack import Finder
+from haystack.pipeline import DocumentSearchPipeline
 from haystack.document_store.faiss import FAISSDocumentStore
 from haystack.pipeline import Pipeline
 from haystack.retriever.dense import EmbeddingRetriever
@@ -19,12 +17,15 @@ DOCUMENTS = [
 ]
 
 
-@pytest.mark.parametrize("document_store", ["faiss"], indirect=True)
-def test_faiss_index_save_and_load(document_store):
+def test_faiss_index_save_and_load(tmp_path):
+    document_store = FAISSDocumentStore(
+        sql_url=f"sqlite:////{tmp_path/'haystack_test.db'}",
+        index="haystack_test",
+    )
     document_store.write_documents(DOCUMENTS)
 
     # test saving the index
-    document_store.save("haystack_test_faiss")
+    document_store.save(tmp_path / "haystack_test_faiss")
 
     # clear existing faiss_index
     document_store.faiss_indexes[document_store.index].reset()
@@ -34,11 +35,15 @@ def test_faiss_index_save_and_load(document_store):
 
     # test loading the index
     new_document_store = FAISSDocumentStore.load(
-        sql_url="sqlite://", faiss_file_path="haystack_test_faiss", index=document_store.index
+        sql_url=f"sqlite:////{tmp_path/'haystack_test.db'}",
+        faiss_file_path=tmp_path / "haystack_test_faiss",
+        index=document_store.index
     )
 
     # check faiss index is restored
     assert new_document_store.faiss_indexes[document_store.index].ntotal == len(DOCUMENTS)
+    # check if documents are restored
+    assert len(new_document_store.get_all_documents()) == len(DOCUMENTS)
 
 
 @pytest.mark.parametrize("document_store", ["faiss"], indirect=True)
@@ -87,8 +92,8 @@ def test_update_docs(document_store, retriever, batch_size):
 @pytest.mark.slow
 @pytest.mark.parametrize("retriever", ["dpr"], indirect=True)
 @pytest.mark.parametrize("document_store", ["milvus", "faiss"], indirect=True)
-def test_update_exiting_docs(document_store, retriever):
-    document_store.update_existing_documents = True
+def test_update_existing_docs(document_store, retriever):
+    document_store.duplicate_documents = "overwrite"
     old_document = Document(text="text_1")
     # initial write
     document_store.write_documents([old_document])
@@ -125,10 +130,9 @@ def test_update_with_empty_store(document_store, retriever):
 
 
 @pytest.mark.parametrize("index_factory", ["Flat", "HNSW", "IVF1,Flat"])
-def test_faiss_retrieving(index_factory):
+def test_faiss_retrieving(index_factory, tmp_path):
     document_store = FAISSDocumentStore(
-        sql_url="sqlite:///test_faiss_retrieving.db",
-        faiss_index_factory_str=index_factory
+        sql_url=f"sqlite:////{tmp_path/'test_faiss_retrieving.db'}", faiss_index_factory_str=index_factory
     )
 
     document_store.delete_all_documents(index="document")
@@ -148,19 +152,17 @@ def test_faiss_retrieving(index_factory):
 
     # Cleanup
     document_store.faiss_indexes[document_store.index].reset()
-    if os.path.exists("test_faiss_retrieving.db"):
-        os.remove("test_faiss_retrieving.db")
 
 
 @pytest.mark.parametrize("retriever", ["embedding"], indirect=True)
 @pytest.mark.parametrize("document_store", ["faiss", "milvus"], indirect=True)
 def test_finding(document_store, retriever):
     document_store.write_documents(DOCUMENTS)
-    finder = Finder(reader=None, retriever=retriever)
+    pipe = DocumentSearchPipeline(retriever=retriever)
 
-    prediction = finder.get_answers_via_similar_questions(question="How to test this?", top_k_retriever=1)
+    prediction = pipe.run(query="How to test this?", top_k_retriever=1)
 
-    assert len(prediction.get('answers', [])) == 1
+    assert len(prediction.get('documents', [])) == 1
 
 
 @pytest.mark.parametrize("retriever", ["embedding"], indirect=True)
@@ -179,7 +181,7 @@ def test_pipeline(document_store, retriever):
     assert len(output["documents"]) == 3
 
 
-def test_faiss_passing_index_from_outside():
+def test_faiss_passing_index_from_outside(tmp_path):
     d = 768
     nlist = 2
     quantizer = faiss.IndexFlatIP(d)
@@ -187,7 +189,9 @@ def test_faiss_passing_index_from_outside():
     faiss_index = faiss.IndexIVFFlat(quantizer, d, nlist, faiss.METRIC_INNER_PRODUCT)
     faiss_index.set_direct_map_type(faiss.DirectMap.Hashtable)
     faiss_index.nprobe = 2
-    document_store = FAISSDocumentStore(sql_url="sqlite:///haystack_test_faiss.db", faiss_index=faiss_index, index=index)
+    document_store = FAISSDocumentStore(
+        sql_url=f"sqlite:////{tmp_path/'haystack_test_faiss.db'}", faiss_index=faiss_index, index=index
+    )
 
     document_store.delete_all_documents()
     # as it is a IVF index we need to train it before adding docs
