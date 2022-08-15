@@ -1,29 +1,38 @@
+# Training Your Own "Dense Passage Retrieval" Model
+
+# Here are some imports that we'll need
+
+import logging
+
+# We configure how logging messages should be displayed and which log level should be used before importing Haystack.
+# Example log message:
+# INFO - haystack.utils.preprocessing -  Converting data/tutorial1/218_Olenna_Tyrell.txt
+# Default log level in basicConfig is WARNING so the explicit parameter is not necessary but can be changed easily:
+logging.basicConfig(format="%(levelname)s - %(name)s -  %(message)s", level=logging.WARNING)
+logging.getLogger("haystack").setLevel(logging.INFO)
+
+from haystack.nodes import DensePassageRetriever
+from haystack.utils import fetch_archive_from_http
+from haystack.document_stores import InMemoryDocumentStore
+
+
 def tutorial9_dpr_training():
-    # Training Your Own "Dense Passage Retrieval" Model
-
-    # Here are some imports that we'll need
-
-    from haystack.retriever.dense import DensePassageRetriever
-    from haystack.preprocessor.utils import fetch_archive_from_http
-    from haystack.document_store.memory import InMemoryDocumentStore
 
     # Download original DPR data
     # WARNING: the train set is 7.4GB and the dev set is 800MB
 
-    doc_dir = "data/dpr_training/"
+    doc_dir = "data/tutorial9"
 
     s3_url_train = "https://dl.fbaipublicfiles.com/dpr/data/retriever/biencoder-nq-train.json.gz"
     s3_url_dev = "https://dl.fbaipublicfiles.com/dpr/data/retriever/biencoder-nq-dev.json.gz"
 
-    fetch_archive_from_http(s3_url_train, output_dir=doc_dir + "train/")
-    fetch_archive_from_http(s3_url_dev, output_dir=doc_dir + "dev/")
+    fetch_archive_from_http(s3_url_train, output_dir=doc_dir + "/train")
+    fetch_archive_from_http(s3_url_dev, output_dir=doc_dir + "/dev")
 
     ## Option 1: Training DPR from Scratch
 
     # Here are the variables to specify our training data, the models that we use to initialize DPR
     # and the directory where we'll be saving the model
-
-    doc_dir = "data/dpr_training/"
 
     train_filename = "train/biencoder-nq-train.json"
     dev_filename = "dev/biencoder-nq-dev.json"
@@ -54,7 +63,7 @@ def tutorial9_dpr_training():
         query_embedding_model=query_model,
         passage_embedding_model=passage_model,
         max_seq_len_query=64,
-        max_seq_len_passage=256
+        max_seq_len_passage=256,
     )
 
     # Start training our model and save it when it is finished
@@ -71,12 +80,17 @@ def tutorial9_dpr_training():
         evaluate_every=3000,
         embed_title=True,
         num_positives=1,
-        num_hard_negatives=1
+        num_hard_negatives=1,
     )
 
     ## Loading
 
     reloaded_retriever = DensePassageRetriever.load(load_dir=save_dir, document_store=None)
 
+
 if __name__ == "__main__":
     tutorial9_dpr_training()
+
+# This Haystack script was made with love by deepset in Berlin, Germany
+# Haystack: https://github.com/deepset-ai/haystack
+# deepset: https://deepset.ai/

@@ -7,27 +7,23 @@
 # In this tutorial we will work on a slightly different domain: "Game of Thrones".
 #
 # Let's see how we can use a bunch of Wikipedia articles to answer a variety of questions about the
-# marvellous seven kingdoms...
+# marvellous seven kingdoms.
 
 import logging
-import subprocess
-import time
 
-from haystack import Finder
-from haystack.document_store.elasticsearch import ElasticsearchDocumentStore
-from haystack.preprocessor.cleaning import clean_wiki_text
-from haystack.preprocessor.utils import convert_files_to_dicts, fetch_archive_from_http
-from haystack.reader.farm import FARMReader
-from haystack.reader.transformers import TransformersReader
-from haystack.utils import print_answers
-from haystack.retriever.sparse import ElasticsearchRetriever
+# We configure how logging messages should be displayed and which log level should be used before importing Haystack.
+# Example log message:
+# INFO - haystack.utils.preprocessing -  Converting data/tutorial1/218_Olenna_Tyrell.txt
+# Default log level in basicConfig is WARNING so the explicit parameter is not necessary but can be changed easily:
+logging.basicConfig(format="%(levelname)s - %(name)s -  %(message)s", level=logging.WARNING)
+logging.getLogger("haystack").setLevel(logging.INFO)
+
+from haystack.document_stores import ElasticsearchDocumentStore
+from haystack.utils import clean_wiki_text, convert_files_to_docs, fetch_archive_from_http, print_answers, launch_es
+from haystack.nodes import FARMReader, TransformersReader, BM25Retriever
 
 
 def tutorial1_basic_qa_pipeline():
-    logger = logging.getLogger(__name__)
-
-    LAUNCH_ELASTICSEARCH = True
-
     # ## Document Store
     #
     # Haystack finds answers to queries within the documents stored in a `DocumentStore`. The current implementations of
@@ -43,17 +39,9 @@ def tutorial1_basic_qa_pipeline():
     #
     # Start an Elasticsearch server
     # You can start Elasticsearch on your local machine instance using Docker. If Docker is not readily available in
-    # your environment (eg., in Colab notebooks), then you can manually download and execute Elasticsearch from source.
+    # your environment (e.g. in Colab notebooks), then you can manually download and execute Elasticsearch from source.
 
-    if LAUNCH_ELASTICSEARCH:
-        logging.info("Starting Elasticsearch ...")
-        status = subprocess.run(
-            ['docker run -d -p 9200:9200 -e "discovery.type=single-node" elasticsearch:7.9.2'], shell=True
-        )
-        if status.returncode:
-            raise Exception("Failed to launch Elasticsearch. If you want to connect to an existing Elasticsearch instance"
-                            "then set LAUNCH_ELASTICSEARCH in the script to False.")
-        time.sleep(15)
+    launch_es()
 
     # Connect to Elasticsearch
     document_store = ElasticsearchDocumentStore(host="localhost", username="", password="", index="document")
@@ -69,26 +57,21 @@ def tutorial1_basic_qa_pipeline():
     # In this tutorial, we download Wikipedia articles about Game of Thrones, apply a basic cleaning function, and add
     # them in Elasticsearch.
 
-
     # Let's first fetch some documents that we want to query
     # Here: 517 Wikipedia articles for Game of Thrones
-    doc_dir = "data/article_txt_got"
-    s3_url = "https://s3.eu-central-1.amazonaws.com/deepset.ai-farm-qa/datasets/documents/wiki_gameofthrones_txt.zip"
+    doc_dir = "data/tutorial1"
+    s3_url = "https://s3.eu-central-1.amazonaws.com/deepset.ai-farm-qa/datasets/documents/wiki_gameofthrones_txt1.zip"
     fetch_archive_from_http(url=s3_url, output_dir=doc_dir)
 
     # convert files to dicts containing documents that can be indexed to our datastore
-    dicts = convert_files_to_dicts(dir_path=doc_dir, clean_func=clean_wiki_text, split_paragraphs=True)
+    docs = convert_files_to_docs(dir_path=doc_dir, clean_func=clean_wiki_text, split_paragraphs=True)
     # You can optionally supply a cleaning function that is applied to each doc (e.g. to remove footers)
     # It must take a str as input, and return a str.
 
     # Now, let's write the docs to our DB.
-    if LAUNCH_ELASTICSEARCH:
-        document_store.write_documents(dicts)
-    else:
-        logger.warning("Since we already have a running ES instance we should not index the same documents again. \n"
-                       "If you still want to do this call: document_store.write_documents(dicts) manually ")
+    document_store.write_documents(docs)
 
-    # ## Initalize Retriever, Reader,  & Finder
+    # ## Initialize Retriever & Reader
     #
     # ### Retriever
     #
@@ -98,12 +81,12 @@ def tutorial1_basic_qa_pipeline():
     # They use some simple but fast algorithm.
     # **Here:** We use Elasticsearch's default BM25 algorithm
     # **Alternatives:**
-    # - Customize the `ElasticsearchRetriever`with custom queries (e.g. boosting) and filters
+    # - Customize the `BM25Retriever`with custom queries (e.g. boosting) and filters
     # - Use `EmbeddingRetriever` to find candidate documents based on the similarity of
     #   embeddings (e.g. created via Sentence-BERT)
     # - Use `TfidfRetriever` in combination with a SQL or InMemory Document store for simple prototyping and debugging
 
-    retriever = ElasticsearchRetriever(document_store=document_store)
+    retriever = BM25Retriever(document_store=document_store)
 
     # Alternative: An in-memory TfidfRetriever based on Pandas dataframes for building quick-prototypes
     # with SQLite document store.
@@ -139,22 +122,59 @@ def tutorial1_basic_qa_pipeline():
     #    model_name_or_path="distilbert-base-uncased-distilled-squad", tokenizer="distilbert-base-uncased", use_gpu=-1)
 
     # ### Pipeline
-    # 
+    #
     # With a Haystack `Pipeline` you can stick together your building blocks to a search pipeline.
     # Under the hood, `Pipelines` are Directed Acyclic Graphs (DAGs) that you can easily customize for your own use cases.
     # To speed things up, Haystack also comes with a few predefined Pipelines. One of them is the `ExtractiveQAPipeline` that combines a retriever and a reader to answer our questions.
     # You can learn more about `Pipelines` in the [docs](https://haystack.deepset.ai/docs/latest/pipelinesmd).
-    from haystack.pipeline import ExtractiveQAPipeline
+    from haystack.pipelines import ExtractiveQAPipeline
+
     pipe = ExtractiveQAPipeline(reader, retriever)
-    
+
     ## Voilà! Ask a question!
-    prediction = pipe.run(query="Who is the father of Arya Stark?", top_k_retriever=10, top_k_reader=5)
+    prediction = pipe.run(
+        query="Who is the father of Arya Stark?", params={"Retriever": {"top_k": 10}, "Reader": {"top_k": 5}}
+    )
 
-    # prediction = pipe.run(query="Who created the Dothraki vocabulary?", top_k_reader=5)
-    # prediction = pipe.run(query="Who is the sister of Sansa?", top_k_reader=5)
+    # prediction = pipe.run(query="Who created the Dothraki vocabulary?", params={"Reader": {"top_k": 5}})
+    # prediction = pipe.run(query="Who is the sister of Sansa?", params={"Reader": {"top_k": 5}})
 
-    print_answers(prediction, details="minimal")
+    # Now you can either print the object directly
+    print("\n\nRaw object:\n")
+    from pprint import pprint
+
+    pprint(prediction)
+
+    # Sample output:
+    # {
+    #     'answers': [ <Answer: answer='Eddard', type='extractive', score=0.9919578731060028, offsets_in_document=[{'start': 608, 'end': 615}], offsets_in_context=[{'start': 72, 'end': 79}], document_id='cc75f739897ecbf8c14657b13dda890e', meta={'name': '454_Music_of_Game_of_Thrones.txt'}}, context='...' >,
+    #                  <Answer: answer='Ned', type='extractive', score=0.9767240881919861, offsets_in_document=[{'start': 3687, 'end': 3801}], offsets_in_context=[{'start': 18, 'end': 132}], document_id='9acf17ec9083c4022f69eb4a37187080', meta={'name': '454_Music_of_Game_of_Thrones.txt'}}, context='...' >,
+    #                  ...
+    #                ]
+    #     'documents': [ <Document: content_type='text', score=0.8034909798951382, meta={'name': '332_Sansa_Stark.txt'}, embedding=None, id=d1f36ec7170e4c46cde65787fe125dfe', content='\n===\'\'A Game of Thrones\'\'===\nSansa Stark begins the novel by being betrothed to Crown ...'>,
+    #                    <Document: content_type='text', score=0.8002150354529785, meta={'name': '191_Gendry.txt'}, embedding=None, id='dd4e070a22896afa81748d6510006d2', 'content='\n===Season 2===\nGendry travels North with Yoren and other Night's Watch recruits, including Arya ...'>,
+    #                    ...
+    #                  ],
+    #     'no_ans_gap':  11.688868522644043,
+    #     'node_id': 'Reader',
+    #     'params': {'Reader': {'top_k': 5}, 'Retriever': {'top_k': 5}},
+    #     'query': 'Who is the father of Arya Stark?',
+    #     'root_node': 'Query'
+    # }
+
+    # Note that the documents contained in the above object are the documents filtered by the Retriever from
+    # the document store. Although the answers were extracted from these documents, it's possible that many
+    # answers were taken from a single one of them, and that some of the documents were not source of any answer.
+
+    # Or use a util to simplify the output
+    # Change `minimum` to `medium` or `all` to raise the level of detail
+    print("\n\nSimplified output:\n")
+    print_answers(prediction, details="minimum")
 
 
 if __name__ == "__main__":
     tutorial1_basic_qa_pipeline()
+
+# This Haystack script was made with love by deepset in Berlin, Germany
+# Haystack: https://github.com/deepset-ai/haystack
+# deepset: https://deepset.ai/

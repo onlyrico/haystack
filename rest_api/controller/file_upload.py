@@ -1,61 +1,88 @@
+from typing import Optional, List
+
 import json
-import logging
-import os
 import shutil
 import uuid
 from pathlib import Path
-from typing import Optional, List
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Depends
+from pydantic import BaseModel
+from haystack import Pipeline
+from haystack.nodes import BaseConverter, PreProcessor
 
-from haystack.pipeline import Pipeline
-from rest_api.config import PIPELINE_YAML_PATH, FILE_UPLOAD_PATH, INDEXING_PIPELINE_NAME
+from rest_api.utils import get_app, get_pipelines
+from rest_api.config import FILE_UPLOAD_PATH
+from rest_api.controller.utils import as_form
 
-logger = logging.getLogger(__name__)
+
 router = APIRouter()
-
-try:
-    INDEXING_PIPELINE = Pipeline.load_from_yaml(Path(PIPELINE_YAML_PATH), pipeline_name=INDEXING_PIPELINE_NAME)
-except KeyError:
-    INDEXING_PIPELINE = None
-    logger.info("Indexing Pipeline not found in the YAML configuration. File Upload API will not be available.")
+app: FastAPI = get_app()
+indexing_pipeline: Pipeline = get_pipelines().get("indexing_pipeline", None)
 
 
-os.makedirs(FILE_UPLOAD_PATH, exist_ok=True)  # create directory for uploading files
+@as_form
+class FileConverterParams(BaseModel):
+    remove_numeric_tables: Optional[bool] = None
+    valid_languages: Optional[List[str]] = None
+
+
+@as_form
+class PreprocessorParams(BaseModel):
+    clean_whitespace: Optional[bool] = None
+    clean_empty_lines: Optional[bool] = None
+    clean_header_footer: Optional[bool] = None
+    split_by: Optional[str] = None
+    split_length: Optional[int] = None
+    split_overlap: Optional[int] = None
+    split_respect_sentence_boundary: Optional[bool] = None
+
+
+class Response(BaseModel):
+    file_id: str
 
 
 @router.post("/file-upload")
-def file_upload(
-    file: UploadFile = File(...),
-    meta: Optional[str] = Form("null"),  # JSON serialized string
-    remove_numeric_tables: Optional[bool] = Form(None),
-    remove_whitespace: Optional[bool] = Form(None),
-    remove_empty_lines: Optional[bool] = Form(None),
-    remove_header_footer: Optional[bool] = Form(None),
-    valid_languages: Optional[List[str]] = Form(None),
-    split_by: Optional[str] = Form(None),
-    split_length: Optional[int] = Form(None),
-    split_overlap: Optional[int] = Form(None),
-    split_respect_sentence_boundary: Optional[bool] = Form(None),
+def upload_file(
+    files: List[UploadFile] = File(...),
+    # JSON serialized string
+    meta: Optional[str] = Form("null"),  # type: ignore
+    fileconverter_params: FileConverterParams = Depends(FileConverterParams.as_form),  # type: ignore
+    preprocessor_params: PreprocessorParams = Depends(PreprocessorParams.as_form),  # type: ignore
 ):
-    if not INDEXING_PIPELINE:
+    """
+    You can use this endpoint to upload a file for indexing
+    (see https://haystack.deepset.ai/guides/rest-api#indexing-documents-in-the-haystack-rest-api-document-store).
+    """
+    if not indexing_pipeline:
         raise HTTPException(status_code=501, detail="Indexing Pipeline is not configured.")
-    try:
-        file_path = Path(FILE_UPLOAD_PATH) / f"{uuid.uuid4().hex}_{file.filename}"
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        INDEXING_PIPELINE.run(
-            file_path=file_path,
-            remove_numeric_tables=remove_numeric_tables,
-            remove_whitespace=remove_whitespace,
-            remove_empty_lines=remove_empty_lines,
-            remove_header_footer=remove_header_footer,
-            valid_languages=valid_languages,
-            split_by=split_by,
-            split_length=split_length,
-            split_overlap=split_overlap,
-            split_respect_sentence_boundary=split_respect_sentence_boundary,
-            meta=json.loads(meta) or {},
-        )
-    finally:
-        file.file.close()
+
+    file_paths: list = []
+    file_metas: list = []
+
+    meta_form = json.loads(meta) or {}  # type: ignore
+    if not isinstance(meta_form, dict):
+        raise HTTPException(status_code=500, detail=f"The meta field must be a dict or None, not {type(meta_form)}")
+
+    for file in files:
+        try:
+            file_path = Path(FILE_UPLOAD_PATH) / f"{uuid.uuid4().hex}_{file.filename}"
+            with file_path.open("wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+
+            file_paths.append(file_path)
+            meta_form["name"] = file.filename
+            file_metas.append(meta_form)
+        finally:
+            file.file.close()
+
+    # Find nodes names
+    converters = indexing_pipeline.get_nodes_by_class(BaseConverter)
+    preprocessors = indexing_pipeline.get_nodes_by_class(PreProcessor)
+
+    params = {}
+    for converter in converters:
+        params[converter.name] = fileconverter_params.dict()
+    for preprocessor in preprocessors:
+        params[preprocessor.name] = preprocessor_params.dict()
+
+    indexing_pipeline.run(file_paths=file_paths, meta=file_metas, params=params)

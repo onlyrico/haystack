@@ -1,44 +1,122 @@
+from typing import List, Dict, Any, Tuple, Optional
+
 import os
+import logging
+from time import sleep
 
 import requests
 import streamlit as st
 
+
 API_ENDPOINT = os.getenv("API_ENDPOINT", "http://localhost:8000")
+STATUS = "initialized"
+HS_VERSION = "hs_version"
 DOC_REQUEST = "query"
 DOC_FEEDBACK = "feedback"
+DOC_UPLOAD = "file-upload"
 
-@st.cache(show_spinner=False)
-def retrieve_doc(query,filters=None,top_k_reader=5,top_k_retriever=5):
-   # Query Haystack API
-   url = f"{API_ENDPOINT}/{DOC_REQUEST}"
-   req = {"query": query, "filters": filters, "top_k_retriever": top_k_retriever, "top_k_reader": top_k_reader}
-   response_raw = requests.post(url,json=req).json()
-   
-   # Format response
-   result = []
-   answers = response_raw["answers"]
-   for i in range(len(answers)):
-       answer = answers[i]['answer']
-       if answer:
-           context = '...' + answers[i]['context'] + '...'
-           meta_name = answers[i]['meta']['name']
-           relevance = round(answers[i]['probability']*100,2)
-           document_id = answers[i]['document_id']
-           offset_start_in_doc = answers[i]['offset_start_in_doc']
-           result.append({'context':context,'answer':answer,'source':meta_name,'relevance':relevance, 'document_id':document_id,'offset_start_in_doc':offset_start_in_doc})
-   return result, response_raw
 
-def feedback_doc(question,is_correct_answer,document_id,model_id,is_correct_document,answer,offset_start_in_doc):
-   # Feedback Haystack API
-   url = f"{API_ENDPOINT}/{DOC_FEEDBACK}"
-   req = {
-         "question": question,
-         "is_correct_answer": is_correct_answer,
-         "document_id":  document_id,
-         "model_id": model_id,
-         "is_correct_document": is_correct_document,
-         "answer": answer,
-         "offset_start_in_doc": offset_start_in_doc
-         }
-   response_raw = requests.post(url,json=req).json()
-   return response_raw
+def haystack_is_ready():
+    """
+    Used to show the "Haystack is loading..." message
+    """
+    url = f"{API_ENDPOINT}/{STATUS}"
+    try:
+        if requests.get(url).status_code < 400:
+            return True
+    except Exception as e:
+        logging.exception(e)
+        sleep(1)  # To avoid spamming a non-existing endpoint at startup
+    return False
+
+
+@st.cache
+def haystack_version():
+    """
+    Get the Haystack version from the REST API
+    """
+    url = f"{API_ENDPOINT}/{HS_VERSION}"
+    return requests.get(url, timeout=0.1).json()["hs_version"]
+
+
+def query(query, filters={}, top_k_reader=5, top_k_retriever=5) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    """
+    Send a query to the REST API and parse the answer.
+    Returns both a ready-to-use representation of the results and the raw JSON.
+    """
+
+    url = f"{API_ENDPOINT}/{DOC_REQUEST}"
+    params = {"filters": filters, "Retriever": {"top_k": top_k_retriever}, "Reader": {"top_k": top_k_reader}}
+    req = {"query": query, "params": params}
+    response_raw = requests.post(url, json=req)
+
+    if response_raw.status_code >= 400 and response_raw.status_code != 503:
+        raise Exception(f"{vars(response_raw)}")
+
+    response = response_raw.json()
+    if "errors" in response:
+        raise Exception(", ".join(response["errors"]))
+
+    # Format response
+    results = []
+    answers = response["answers"]
+    for answer in answers:
+        if answer.get("answer", None):
+            results.append(
+                {
+                    "context": "..." + answer["context"] + "...",
+                    "answer": answer.get("answer", None),
+                    "source": answer["meta"]["name"],
+                    "relevance": round(answer["score"] * 100, 2),
+                    "document": [doc for doc in response["documents"] if doc["id"] == answer["document_id"]][0],
+                    "offset_start_in_doc": answer["offsets_in_document"][0]["start"],
+                    "_raw": answer,
+                }
+            )
+        else:
+            results.append(
+                {
+                    "context": None,
+                    "answer": None,
+                    "document": None,
+                    "relevance": round(answer["score"] * 100, 2),
+                    "_raw": answer,
+                }
+            )
+    return results, response
+
+
+def send_feedback(query, answer_obj, is_correct_answer, is_correct_document, document) -> None:
+    """
+    Send a feedback (label) to the REST API
+    """
+    url = f"{API_ENDPOINT}/{DOC_FEEDBACK}"
+    req = {
+        "query": query,
+        "document": document,
+        "is_correct_answer": is_correct_answer,
+        "is_correct_document": is_correct_document,
+        "origin": "user-feedback",
+        "answer": answer_obj,
+    }
+    response_raw = requests.post(url, json=req)
+    if response_raw.status_code >= 400:
+        raise ValueError(f"An error was returned [code {response_raw.status_code}]: {response_raw.json()}")
+
+
+def upload_doc(file):
+    url = f"{API_ENDPOINT}/{DOC_UPLOAD}"
+    files = [("files", file)]
+    response = requests.post(url, files=files).json()
+    return response
+
+
+def get_backlink(result) -> Tuple[Optional[str], Optional[str]]:
+    if result.get("document", None):
+        doc = result["document"]
+        if isinstance(doc, dict):
+            if doc.get("meta", None):
+                if isinstance(doc["meta"], dict):
+                    if doc["meta"].get("url", None) and doc["meta"].get("title", None):
+                        return doc["meta"]["url"], doc["meta"]["title"]
+    return None, None
